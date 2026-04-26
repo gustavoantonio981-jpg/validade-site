@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Validades — Gestão de Produtos</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
 <script>
   tailwind.config = {
     darkMode: 'class',
@@ -49,21 +49,26 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
 
-  /* html5-qrcode overrides */
-  #qr-reader { width:100% !important; border:none !important; }
-  #qr-reader video { border-radius:10px; width:100% !important; }
-  #qr-reader__scan_region { border-radius:10px; overflow:hidden; background:#111; }
-  #qr-reader__dashboard { padding:8px 0 0 !important; }
-  #qr-reader__dashboard_section_csr button {
-    background:#2563eb !important; color:white !important;
-    border:none !important; padding:8px 16px !important;
-    border-radius:8px !important; font-size:13px !important;
-    cursor:pointer !important; margin-top:4px !important;
+  /* Scanner */
+  #scan-video { width:100%; border-radius:10px; background:#111; display:block; aspect-ratio:4/3; object-fit:cover; }
+  .scan-overlay {
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;
   }
-  #qr-reader__dashboard_section_swaplink { font-size:12px; color:#64748b; }
-  #qr-reader__status_span { font-size:12px !important; color:#64748b !important; }
-  html.dark #qr-reader__status_span { color:#94a3b8 !important; }
-  html.dark #qr-reader__dashboard { background:transparent !important; color:#e2e8f0 !important; }
+  .scan-frame {
+    width:240px; height:130px; position:relative;
+  }
+  .scan-frame::before,.scan-frame::after,
+  .scan-frame > span::before,.scan-frame > span::after {
+    content:''; position:absolute; width:20px; height:20px; border-color:#60a5fa; border-style:solid;
+  }
+  .scan-frame::before     { top:0;    left:0;  border-width:3px 0 0 3px; }
+  .scan-frame::after      { top:0;    right:0; border-width:3px 3px 0 0; }
+  .scan-frame > span::before { bottom:0; left:0;  border-width:0 0 3px 3px; }
+  .scan-frame > span::after  { bottom:0; right:0; border-width:0 3px 3px 0; }
+  .scan-line { animation: scanLine 1.8s ease-in-out infinite; position:absolute; left:4px; right:4px; height:2px; background:#60a5fa; box-shadow:0 0 8px #60a5fa; }
+  /* Scan tabs */
+  .scan-tab-btn { flex:1; padding:6px; font-size:12px; font-weight:500; border-radius:6px; transition:all .15s; color:#64748b; }
+  .scan-tab-btn.active { background:#2563eb; color:white; }
 
   /* Toast */
   #toast {
@@ -395,30 +400,58 @@
 ═══════════════════════════════════ -->
 <div id="modal-scanner" class="modal-backdrop hidden" onclick="handleModalBackdrop(event,'modal-scanner')">
   <div class="modal-box p-5 fade-in">
-    <h2 class="text-base font-bold text-slate-900 mb-3">📷 Escanear Código de Barras</h2>
+    <h2 class="text-base font-bold text-slate-900 mb-3">📷 Ler Código de Barras</h2>
 
-    <!-- Scanner (html5-qrcode injeta aqui) -->
-    <div id="qr-reader" class="mb-3 rounded-xl overflow-hidden"></div>
-    <!-- Camera error -->
-    <div id="camera-error" class="hidden bg-amber-50 border border-amber-200 text-amber-700 text-xs px-3 py-2 rounded-lg mb-3"></div>
-
-    <div class="flex items-center gap-3 my-3">
-      <div class="flex-1 h-px bg-slate-200"></div>
-      <span class="text-xs text-slate-400">ou digite manualmente</span>
-      <div class="flex-1 h-px bg-slate-200"></div>
+    <!-- Abas -->
+    <div class="flex gap-1 bg-slate-100 rounded-lg p-1 mb-4">
+      <button id="stab-camera" class="scan-tab-btn active" onclick="switchScanTab('camera')">📷 Câmera</button>
+      <button id="stab-usb"    class="scan-tab-btn"        onclick="switchScanTab('usb')">🔌 USB/Bluetooth</button>
+      <button id="stab-manual" class="scan-tab-btn"        onclick="switchScanTab('manual')">⌨️ Digitar</button>
     </div>
 
-    <form onsubmit="handleManualBarcode(event)" class="flex gap-2 mb-3">
-      <input id="manual-barcode" type="text" placeholder="7891234567890"
-        class="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-blue-400" />
-      <button type="submit"
-        class="px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 transition-colors">
-        Usar
-      </button>
-    </form>
+    <!-- ABA: CÂMERA -->
+    <div id="stab-camera-content">
+      <div class="relative rounded-xl overflow-hidden bg-gray-900 mb-3">
+        <video id="scan-video" autoplay playsinline muted></video>
+        <div class="scan-overlay">
+          <div class="scan-frame"><span></span>
+            <div class="scan-line"></div>
+          </div>
+        </div>
+        <p class="absolute bottom-2 left-0 right-0 text-center text-white text-xs bg-black/40 py-1">
+          Aponte para o código de barras
+        </p>
+      </div>
+      <div id="camera-error" class="hidden bg-amber-50 border border-amber-200 text-amber-700 text-xs px-3 py-2 rounded-lg mb-2"></div>
+      <p id="camera-status" class="text-xs text-slate-400 text-center mb-2">Iniciando câmera…</p>
+    </div>
+
+    <!-- ABA: USB/BLUETOOTH -->
+    <div id="stab-usb-content" class="hidden">
+      <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 mb-4 text-center">
+        <p class="text-3xl mb-2">🔌</p>
+        <p class="text-sm font-medium text-slate-700 mb-1">Leitor USB ou Bluetooth</p>
+        <p class="text-xs text-slate-500">Conecte o leitor e escaneie o produto.<br>O código será detectado automaticamente.</p>
+      </div>
+      <div id="usb-detected" class="hidden bg-green-50 border border-green-200 text-green-700 text-sm px-4 py-3 rounded-lg text-center font-mono mb-2"></div>
+      <p class="text-xs text-slate-400 text-center">Aguardando leitura…</p>
+    </div>
+
+    <!-- ABA: MANUAL -->
+    <div id="stab-manual-content" class="hidden">
+      <p class="text-sm text-slate-500 mb-3">Digite os números do código de barras:</p>
+      <form onsubmit="handleManualBarcode(event)" class="space-y-3">
+        <input id="manual-barcode" type="number" placeholder="7891234567890"
+          class="w-full px-3 py-3 border border-slate-200 rounded-lg text-lg font-mono text-center outline-none focus:ring-2 focus:ring-blue-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+        <button type="submit"
+          class="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 transition-colors">
+          ✓ Usar este código
+        </button>
+      </form>
+    </div>
 
     <button onclick="closeScannerModal()"
-      class="w-full py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
+      class="w-full mt-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
       Cancelar
     </button>
   </div>
@@ -737,59 +770,118 @@ function confirmDelete() {
   showToast('🗑️ Produto removido')
 }
 
-// ─── Scanner (html5-qrcode) ───────────────────────────────────────────────────
-let html5Scanner = null
+// ─── Scanner ──────────────────────────────────────────────────────────────────
+let zxingReader  = null
+let currentScanTab = 'camera'
 
-function openScanner() {
-  scannerForForm = false
-  startScannerModal()
-}
-function openScannerForForm() {
-  scannerForForm = true
-  closeModal('modal-form')
-  startScannerModal()
+// USB / Bluetooth scanner detection (types fast + Enter)
+let usbBuf = '', usbTimer = null
+document.addEventListener('keydown', e => {
+  const active = document.activeElement
+  const inInput = active && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName)
+  const scannerOpen = !document.getElementById('modal-scanner').classList.contains('hidden')
+
+  // Global USB detection: only when scanner modal is open on USB tab OR no modal focused input
+  if (scannerOpen && currentScanTab === 'usb') {
+    if (e.key === 'Enter' && usbBuf.length >= 3) {
+      const code = usbBuf; usbBuf = ''
+      onBarcodeDetected(code)
+      return
+    }
+    if (e.key.length === 1) {
+      usbBuf += e.key
+      clearTimeout(usbTimer)
+      usbTimer = setTimeout(() => { usbBuf = '' }, 80)
+    }
+    return
+  }
+
+  // When no modal open — USB scanner fills barcode input automatically
+  if (!scannerOpen && !inInput && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+    usbBuf += e.key
+    clearTimeout(usbTimer)
+    usbTimer = setTimeout(() => { usbBuf = '' }, 80)
+  }
+  if (!scannerOpen && e.key === 'Enter' && usbBuf.length >= 3) {
+    const code = usbBuf; usbBuf = ''
+    onBarcodeDetected(code)
+  }
+})
+
+function switchScanTab(tab) {
+  currentScanTab = tab
+  ;['camera','usb','manual'].forEach(t => {
+    document.getElementById(`stab-${t}`).classList.toggle('active', t === tab)
+    document.getElementById(`stab-${t}-content`).classList.toggle('hidden', t !== tab)
+  })
+  if (tab === 'camera') startCamera()
+  else stopCamera()
+  if (tab === 'manual') setTimeout(() => document.getElementById('manual-barcode').focus(), 100)
+  if (tab === 'usb') { usbBuf = ''; document.getElementById('usb-detected').classList.add('hidden') }
 }
 
-async function startScannerModal() {
-  openModal('modal-scanner')
+function openScanner() { scannerForForm = false; startScannerModal() }
+function openScannerForForm() { scannerForForm = true; closeModal('modal-form'); startScannerModal() }
+
+function startScannerModal() {
+  currentScanTab = 'camera'
+  ;['camera','usb','manual'].forEach(t => {
+    document.getElementById(`stab-${t}`).classList.toggle('active', t === 'camera')
+    document.getElementById(`stab-${t}-content`).classList.toggle('hidden', t !== 'camera')
+  })
   document.getElementById('manual-barcode').value = ''
-  document.getElementById('camera-error').classList.add('hidden')
-  document.getElementById('qr-reader').innerHTML = ''
+  document.getElementById('usb-detected').classList.add('hidden')
+  openModal('modal-scanner')
+  startCamera()
+}
+
+async function startCamera() {
+  const statusEl = document.getElementById('camera-status')
+  const errEl    = document.getElementById('camera-error')
+  statusEl.textContent = 'Iniciando câmera…'
+  errEl.classList.add('hidden')
+  stopCamera()
 
   try {
-    html5Scanner = new Html5Qrcode('qr-reader')
-    await html5Scanner.start(
-      { facingMode: 'environment' },
-      {
-        fps: 15,
-        qrbox: { width: 260, height: 140 },
-        aspectRatio: 1.5,
-        formatsToSupport: [
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.EAN_8,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.UPC_E,
-          Html5QrcodeSupportedFormats.QR_CODE,
-          Html5QrcodeSupportedFormats.ITF,
-          Html5QrcodeSupportedFormats.DATA_MATRIX,
-        ]
-      },
-      (decodedText) => { onBarcodeDetected(decodedText) },
-      () => {} // erros de frame ignorados
-    )
+    if (typeof ZXing === 'undefined') throw new Error('Biblioteca não carregou. Verifique sua conexão.')
+    zxingReader = new ZXing.BrowserMultiFormatReader()
+    const devices = await zxingReader.listVideoInputDevices()
+
+    if (!devices || devices.length === 0) throw new Error('Nenhuma câmera encontrada')
+
+    // Prefer back/environment camera
+    const device = devices.find(d => /back|rear|environment|traseira/i.test(d.label)) || devices[devices.length - 1]
+
+    statusEl.textContent = `Câmera: ${device.label || 'Câmera ' + (devices.indexOf(device)+1)}`
+
+    await zxingReader.decodeFromVideoDevice(device.deviceId, 'scan-video', (result, err) => {
+      if (result) onBarcodeDetected(result.getText())
+      // NotFoundException é normal — ignora
+    })
   } catch (err) {
-    const errEl = document.getElementById('camera-error')
-    errEl.textContent = '📷 Câmera não disponível: ' + (err.message || String(err))
+    errEl.textContent = '📷 ' + (err.message || 'Câmera indisponível. Use USB ou digite o código.')
     errEl.classList.remove('hidden')
+    statusEl.textContent = ''
+    // Auto-switch to manual tab
+    setTimeout(() => switchScanTab('manual'), 1500)
   }
 }
 
+function stopCamera() {
+  if (zxingReader) {
+    try { zxingReader.reset() } catch {}
+    zxingReader = null
+  }
+  const v = document.getElementById('scan-video')
+  if (v && v.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null }
+}
+
 function onBarcodeDetected(barcode) {
-  stopScanner()
+  barcode = String(barcode).trim()
+  if (!barcode) return
+  stopCamera()
   closeModal('modal-scanner')
-  showToast(`📷 Código: ${barcode}`)
+  showToast(`✓ Código lido: ${barcode}`)
   openProductFormWithBarcode(barcode)
   if (!scannerForForm) switchTab('list')
 }
@@ -802,19 +894,9 @@ function handleManualBarcode(e) {
 }
 
 function closeScannerModal() {
-  stopScanner()
+  stopCamera()
   closeModal('modal-scanner')
-  if (scannerForForm) openModal('modal-form')
-}
-
-async function stopScanner() {
-  if (html5Scanner) {
-    try {
-      if (html5Scanner.isScanning) await html5Scanner.stop()
-      html5Scanner.clear()
-    } catch {}
-    html5Scanner = null
-  }
+  if (scannerForForm) setTimeout(() => openModal('modal-form'), 50)
 }
 
 // ─── Modal helpers ────────────────────────────────────────────────────────────
@@ -823,7 +905,7 @@ function openModal(id) {
 }
 function closeModal(id) {
   document.getElementById(id).classList.add('hidden')
-  if (id === 'modal-scanner') { stopScanner(); if (scannerForForm) openModal('modal-form') }
+  if (id === 'modal-scanner') stopCamera()
 }
 function handleModalBackdrop(e, id) {
   if (e.target.id === id) {
@@ -859,16 +941,15 @@ function showToast(msg) {
   toastTimer = setTimeout(() => { el.style.display = 'none' }, 2500)
 }
 
-// ─── Keyboard ─────────────────────────────────────────────────────────────────
+// ─── Escape para fechar modais ────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    ;['modal-form','modal-scanner','modal-delete'].forEach(id => {
-      if (!document.getElementById(id).classList.contains('hidden')) {
-        if (id === 'modal-scanner') closeScannerModal()
-        else closeModal(id)
-      }
-    })
-  }
+  if (e.key !== 'Escape') return
+  ;['modal-form','modal-scanner','modal-delete'].forEach(id => {
+    if (!document.getElementById(id).classList.contains('hidden')) {
+      if (id === 'modal-scanner') closeScannerModal()
+      else closeModal(id)
+    }
+  })
 })
 </script>
 </body>
