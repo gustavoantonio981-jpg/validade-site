@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Validades — Gestão de Produtos</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
   tailwind.config = {
     darkMode: 'class',
@@ -48,8 +49,21 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
 
-  /* Camera view */
-  #camera-preview { width:100%; aspect-ratio:4/3; object-fit:cover; background:#111; border-radius:10px; }
+  /* html5-qrcode overrides */
+  #qr-reader { width:100% !important; border:none !important; }
+  #qr-reader video { border-radius:10px; width:100% !important; }
+  #qr-reader__scan_region { border-radius:10px; overflow:hidden; background:#111; }
+  #qr-reader__dashboard { padding:8px 0 0 !important; }
+  #qr-reader__dashboard_section_csr button {
+    background:#2563eb !important; color:white !important;
+    border:none !important; padding:8px 16px !important;
+    border-radius:8px !important; font-size:13px !important;
+    cursor:pointer !important; margin-top:4px !important;
+  }
+  #qr-reader__dashboard_section_swaplink { font-size:12px; color:#64748b; }
+  #qr-reader__status_span { font-size:12px !important; color:#64748b !important; }
+  html.dark #qr-reader__status_span { color:#94a3b8 !important; }
+  html.dark #qr-reader__dashboard { background:transparent !important; color:#e2e8f0 !important; }
 
   /* Toast */
   #toast {
@@ -383,26 +397,8 @@
   <div class="modal-box p-5 fade-in">
     <h2 class="text-base font-bold text-slate-900 mb-3">📷 Escanear Código de Barras</h2>
 
-    <!-- Camera -->
-    <div class="relative rounded-xl overflow-hidden bg-gray-900 mb-3" style="aspect-ratio:4/3">
-      <video id="camera-preview" autoplay playsinline muted></video>
-      <!-- Viewfinder -->
-      <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <div class="relative w-52 h-36 border-2 border-blue-400 rounded-lg">
-          <!-- Corners -->
-          <div class="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-blue-400 rounded-tl-sm"></div>
-          <div class="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-blue-400 rounded-tr-sm"></div>
-          <div class="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-blue-400 rounded-bl-sm"></div>
-          <div class="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-blue-400 rounded-br-sm"></div>
-          <!-- Scan line -->
-          <div class="scan-line absolute left-0 right-0 h-0.5 bg-blue-400" style="top:8%;opacity:0.9;box-shadow:0 0 6px #60a5fa;"></div>
-        </div>
-      </div>
-      <p id="camera-hint" class="absolute bottom-2 left-0 right-0 text-center text-white text-xs bg-black/40 py-1">
-        Aponte a câmera para o código de barras
-      </p>
-    </div>
-
+    <!-- Scanner (html5-qrcode injeta aqui) -->
+    <div id="qr-reader" class="mb-3 rounded-xl overflow-hidden"></div>
     <!-- Camera error -->
     <div id="camera-error" class="hidden bg-amber-50 border border-amber-200 text-amber-700 text-xs px-3 py-2 rounded-lg mb-3"></div>
 
@@ -741,7 +737,9 @@ function confirmDelete() {
   showToast('🗑️ Produto removido')
 }
 
-// ─── Scanner ──────────────────────────────────────────────────────────────────
+// ─── Scanner (html5-qrcode) ───────────────────────────────────────────────────
+let html5Scanner = null
+
 function openScanner() {
   scannerForForm = false
   startScannerModal()
@@ -756,42 +754,35 @@ async function startScannerModal() {
   openModal('modal-scanner')
   document.getElementById('manual-barcode').value = ''
   document.getElementById('camera-error').classList.add('hidden')
+  document.getElementById('qr-reader').innerHTML = ''
 
-  const video = document.getElementById('camera-preview')
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-    })
-    scannerStream = stream
-    video.srcObject = stream
-
-    // Use BarcodeDetector if available
-    if ('BarcodeDetector' in window) {
-      scannerDetector = new BarcodeDetector({
-        formats: ['ean_13','ean_8','code_128','code_39','upc_a','upc_e','qr_code','data_matrix']
-      })
-      let detected = false
-      const detect = async () => {
-        if (detected || !scannerStream) return
-        try {
-          const results = await scannerDetector.detect(video)
-          if (results.length > 0) {
-            detected = true
-            onBarcodeDetected(results[0].rawValue)
-            return
-          }
-        } catch {}
-        scannerAnimFrame = requestAnimationFrame(detect)
-      }
-      scannerAnimFrame = requestAnimationFrame(detect)
-    } else {
-      document.getElementById('camera-hint').textContent = '⚠️ Navegador sem suporte automático — use a entrada manual'
-    }
+    html5Scanner = new Html5Qrcode('qr-reader')
+    await html5Scanner.start(
+      { facingMode: 'environment' },
+      {
+        fps: 15,
+        qrbox: { width: 260, height: 140 },
+        aspectRatio: 1.5,
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.QR_CODE,
+          Html5QrcodeSupportedFormats.ITF,
+          Html5QrcodeSupportedFormats.DATA_MATRIX,
+        ]
+      },
+      (decodedText) => { onBarcodeDetected(decodedText) },
+      () => {} // erros de frame ignorados
+    )
   } catch (err) {
     const errEl = document.getElementById('camera-error')
-    errEl.textContent = '📷 Câmera não disponível: ' + (err.message || err)
+    errEl.textContent = '📷 Câmera não disponível: ' + (err.message || String(err))
     errEl.classList.remove('hidden')
-    video.style.opacity = '0'
   }
 }
 
@@ -799,12 +790,8 @@ function onBarcodeDetected(barcode) {
   stopScanner()
   closeModal('modal-scanner')
   showToast(`📷 Código: ${barcode}`)
-  if (scannerForForm) {
-    openProductFormWithBarcode(barcode)
-  } else {
-    openProductFormWithBarcode(barcode)
-    switchTab('list')
-  }
+  openProductFormWithBarcode(barcode)
+  if (!scannerForForm) switchTab('list')
 }
 
 function handleManualBarcode(e) {
@@ -820,16 +807,14 @@ function closeScannerModal() {
   if (scannerForForm) openModal('modal-form')
 }
 
-function stopScanner() {
-  if (scannerAnimFrame) { cancelAnimationFrame(scannerAnimFrame); scannerAnimFrame = null }
-  if (scannerStream) {
-    scannerStream.getTracks().forEach(t => t.stop())
-    scannerStream = null
+async function stopScanner() {
+  if (html5Scanner) {
+    try {
+      if (html5Scanner.isScanning) await html5Scanner.stop()
+      html5Scanner.clear()
+    } catch {}
+    html5Scanner = null
   }
-  scannerDetector = null
-  const video = document.getElementById('camera-preview')
-  video.srcObject = null
-  video.style.opacity = ''
 }
 
 // ─── Modal helpers ────────────────────────────────────────────────────────────
@@ -838,7 +823,7 @@ function openModal(id) {
 }
 function closeModal(id) {
   document.getElementById(id).classList.add('hidden')
-  if (id === 'modal-scanner') stopScanner()
+  if (id === 'modal-scanner') { stopScanner(); if (scannerForForm) openModal('modal-form') }
 }
 function handleModalBackdrop(e, id) {
   if (e.target.id === id) {
