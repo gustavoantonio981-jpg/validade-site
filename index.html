@@ -716,59 +716,91 @@ async function openProductFormWithBarcode(barcode) {
   await lookupBarcode(barcode)
 }
 
-async function lookupBarcode(barcode) {
-  const nameEl    = document.getElementById('form-name')
-  const statusEl  = document.getElementById('lookup-status')
+// ─── Lookup em múltiplas bases ────────────────────────────────────────────────
+const LOOKUP_SOURCES = [
+  { url: 'https://world.openfoodfacts.org',    label: 'Open Food Facts',    cat: 'Alimentos'    },
+  { url: 'https://world.openbeautyfacts.org',  label: 'Open Beauty Facts',  cat: 'Cosméticos'   },
+  { url: 'https://world.openmedicinefacts.org',label: 'Open Medicine Facts', cat: 'Medicamentos' },
+  { url: 'https://world.openpetfoodfacts.org', label: 'Open Pet Food Facts', cat: 'Outros'       },
+]
 
-  statusEl.textContent = '🔍 Buscando produto…'
+const CAT_MAP = {
+  'beverages':'Bebidas','drinks':'Bebidas','waters':'Bebidas','juices':'Bebidas',
+  'dairies':'Alimentos','milks':'Alimentos','meats':'Alimentos','breads':'Alimentos',
+  'cereals':'Alimentos','fruits':'Alimentos','vegetables':'Alimentos','snacks':'Alimentos',
+  'sweets':'Alimentos','chocolates':'Alimentos','cheeses':'Alimentos','yogurts':'Alimentos',
+  'beauty':'Cosméticos','cosmetics':'Cosméticos','hygiene':'Cosméticos','skincare':'Cosméticos',
+  'makeup':'Cosméticos','perfumes':'Cosméticos','hair':'Cosméticos',
+  'medications':'Medicamentos','medicines':'Medicamentos','drugs':'Medicamentos','pharmacy':'Medicamentos',
+  'supplements':'Medicamentos','vitamins':'Medicamentos',
+  'cleaning':'Limpeza','household':'Limpeza','detergents':'Limpeza',
+}
+
+async function fetchFromSource(source, barcode) {
+  const fields = 'product_name,product_name_pt,generic_name,brands,categories_tags'
+  const res = await fetch(
+    `${source.url}/api/v2/product/${encodeURIComponent(barcode)}?fields=${fields}`,
+    { signal: AbortSignal.timeout(7000) }
+  )
+  const data = await res.json()
+  if (data.status !== 1 || !data.product) return null
+  return { product: data.product, source }
+}
+
+async function lookupBarcode(barcode) {
+  const nameEl   = document.getElementById('form-name')
+  const statusEl = document.getElementById('lookup-status')
+
+  statusEl.textContent = '🔍 Buscando produto em múltiplas bases…'
   statusEl.className   = 'text-xs text-blue-500 mt-1'
 
   try {
-    const res  = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}?fields=product_name,product_name_pt,brands,categories_tags,quantity`, { signal: AbortSignal.timeout(6000) })
-    const data = await res.json()
+    // Consulta todas em paralelo — usa a primeira que responder com resultado
+    const result = await Promise.any(
+      LOOKUP_SOURCES.map(src =>
+        fetchFromSource(src, barcode).then(r => {
+          if (!r) throw new Error('not found')
+          return r
+        })
+      )
+    )
 
-    if (data.status !== 1 || !data.product) {
-      statusEl.textContent = '⚠ Produto não encontrado — preencha o nome manualmente'
-      statusEl.className   = 'text-xs text-amber-500 mt-1'
-      setTimeout(() => document.getElementById('form-name').focus(), 100)
-      return
-    }
-
-    const p    = data.product
-    const name = p.product_name_pt || p.product_name || ''
-    const brand = p.brands || ''
+    const { product: p, source } = result
+    const name     = p.product_name_pt || p.product_name || p.generic_name || ''
+    const brand    = p.brands || ''
     const fullName = [brand, name].filter(Boolean).join(' — ')
 
     if (fullName) {
       nameEl.value = fullName
-      statusEl.textContent = '✓ Produto encontrado!'
+      statusEl.textContent = `✓ Encontrado via ${source.label}`
       statusEl.className   = 'text-xs text-green-600 mt-1'
     } else {
-      statusEl.textContent = '⚠ Nome não encontrado — preencha manualmente'
+      statusEl.textContent = '⚠ Código encontrado mas sem nome — preencha manualmente'
       statusEl.className   = 'text-xs text-amber-500 mt-1'
     }
 
-    // Categoria
+    // Categoria automática
     const cats = p.categories_tags || []
-    const catMap = { 'beverages':'Bebidas', 'drinks':'Bebidas', 'dairies':'Alimentos', 'milks':'Alimentos',
-      'meats':'Alimentos', 'breads':'Alimentos', 'cereals':'Alimentos', 'fruits':'Alimentos',
-      'vegetables':'Alimentos', 'snacks':'Alimentos', 'sweets':'Alimentos',
-      'beauty':'Cosméticos', 'hygiene':'Cosméticos', 'medications':'Medicamentos',
-      'cleaning':'Limpeza', 'household':'Limpeza' }
-    for (const [key, val] of Object.entries(catMap)) {
-      if (cats.some(c => c.includes(key))) {
-        document.getElementById('form-category').value = val
-        break
-      }
+    let detectedCat = source.cat // padrão da fonte
+    for (const [key, val] of Object.entries(CAT_MAP)) {
+      if (cats.some(c => c.includes(key))) { detectedCat = val; break }
     }
+    document.getElementById('form-category').value = detectedCat
 
-    setTimeout(() => document.getElementById('form-expiry').focus(), 100)
+    setTimeout(() => {
+      document.getElementById('form-expiry').focus()
+      statusEl.textContent = ''
+    }, 3000)
+
   } catch {
-    statusEl.textContent = '⚠ Sem conexão — preencha o nome manualmente'
+    // Nenhuma base encontrou
+    statusEl.textContent = '⚠ Produto não encontrado — preencha o nome manualmente'
     statusEl.className   = 'text-xs text-amber-500 mt-1'
+    setTimeout(() => {
+      nameEl.focus()
+      statusEl.textContent = ''
+    }, 3000)
   }
-
-  setTimeout(() => { statusEl.textContent = '' }, 4000)
 }
 
 function handleFormSubmit(e) {
