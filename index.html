@@ -508,9 +508,37 @@
     </div>
 
     <!-- Datas encontradas -->
-    <div id="ocr-results" class="hidden mb-3">
+    <div id="ocr-results-date" class="hidden mb-3">
       <p class="text-xs font-medium text-slate-600 mb-2">Datas encontradas — toque para usar:</p>
       <div id="ocr-dates-list" class="flex flex-wrap gap-2"></div>
+    </div>
+
+    <!-- Campos de medicamento encontrados -->
+    <div id="ocr-results-med" class="hidden mb-3 space-y-3">
+      <!-- Nome -->
+      <div id="ocr-med-name-wrap" class="hidden">
+        <p class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">💊 Nome — toque para selecionar</p>
+        <div id="ocr-med-name-list" class="space-y-1"></div>
+      </div>
+      <!-- Dosagem -->
+      <div id="ocr-med-dose-wrap" class="hidden">
+        <p class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">⚗️ Dosagem detectada</p>
+        <div id="ocr-med-dose-list" class="flex flex-wrap gap-2"></div>
+      </div>
+      <!-- Forma farmacêutica -->
+      <div id="ocr-med-form-wrap" class="hidden">
+        <p class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">🔵 Forma farmacêutica</p>
+        <p id="ocr-med-form-val" class="text-sm font-semibold text-slate-700"></p>
+      </div>
+      <!-- Preview final -->
+      <div id="ocr-med-preview-wrap" class="hidden bg-blue-50 border border-blue-200 rounded-lg p-3">
+        <p class="text-xs text-blue-500 font-medium mb-1">Prévia do nome:</p>
+        <p id="ocr-med-preview-text" class="text-sm font-bold text-slate-800 leading-snug"></p>
+        <button onclick="applyMedName()"
+          class="mt-2 w-full py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors">
+          ✓ Usar este nome
+        </button>
+      </div>
     </div>
 
     <!-- Botões de ação -->
@@ -1171,16 +1199,6 @@ function ocrFromFile(e) {
   reader.readAsDataURL(file)
 }
 
-function ocrRetry() {
-  document.getElementById('ocr-results').classList.add('hidden')
-  document.getElementById('ocr-preview-wrap').classList.add('hidden')
-  document.getElementById('ocr-camera-wrap').classList.remove('hidden')
-  document.getElementById('ocr-retry-btn').classList.add('hidden')
-  document.getElementById('ocr-actions').classList.remove('hidden')
-  document.getElementById('ocr-progress-wrap').classList.add('hidden')
-  document.getElementById('ocr-status').textContent = 'Aponte para a data de validade'
-}
-
 async function processOCRImage(dataUrl) {
   // Mostra preview
   document.getElementById('ocr-preview-img').src = dataUrl
@@ -1222,13 +1240,14 @@ async function processOCRImage(dataUrl) {
         renderOCRDates(dates)
       }
     } else {
-      const lines = extractNameLines(text)
-      if (lines.length === 0) {
-        setStatus('⚠ Nenhum texto encontrado. Tente uma foto mais nítida.')
+      const fields = extractMedFields(text)
+      const total = fields.names.length + fields.dosages.length + (fields.forma ? 1 : 0)
+      if (total === 0) {
+        setStatus('⚠ Nenhum texto reconhecido. Tente foto mais nítida e bem iluminada.')
         document.getElementById('ocr-retry-btn').classList.remove('hidden')
       } else {
-        setStatus('✓ Toque na linha com o nome do produto:')
-        renderOCRNames(lines)
+        setStatus('✓ Campos detectados — selecione o nome:')
+        renderMedFields(fields)
       }
     }
   } catch (err) {
@@ -1243,23 +1262,67 @@ async function enhanceImageForOCR(dataUrl) {
   return new Promise(resolve => {
     const img = new Image()
     img.onload = () => {
-      const c   = document.createElement('canvas')
-      const MAX = 2000
-      const scale = Math.min(MAX / img.width, MAX / img.height, 1)
-      c.width  = img.width  * scale
-      c.height = img.height * scale
+      const c = document.createElement('canvas')
+      // Upscale para pelo menos 2400px largura (melhora OCR em texto pequeno)
+      const MIN = 2400
+      const scale = Math.max(MIN / img.width, 1)
+      c.width  = Math.round(img.width  * scale)
+      c.height = Math.round(img.height * scale)
       const ctx = c.getContext('2d')
+
+      // Renderiza com suavização de alta qualidade
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
       ctx.drawImage(img, 0, 0, c.width, c.height)
 
-      // Grayscale + contraste aumentado
       const id = ctx.getImageData(0, 0, c.width, c.height)
       const d  = id.data
-      for (let i = 0; i < d.length; i += 4) {
-        const gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2]
-        // Contraste
-        const c2 = Math.min(255, Math.max(0, (gray - 128) * 1.5 + 128))
-        d[i] = d[i+1] = d[i+2] = c2
+      const W  = c.width
+
+      // 1. Converte para grayscale
+      const gray = new Uint8Array(d.length / 4)
+      for (let i = 0, g = 0; i < d.length; i += 4, g++) {
+        gray[g] = Math.round(0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2])
       }
+
+      // 2. Unsharp mask — acentua bordas (melhora leitura de fontes)
+      const sharp = new Uint8Array(gray.length)
+      const H = c.height
+      for (let y = 1; y < H-1; y++) {
+        for (let x = 1; x < W-1; x++) {
+          const idx = y * W + x
+          // Laplaciano simples
+          const lap = 5 * gray[idx]
+            - gray[idx - 1] - gray[idx + 1]
+            - gray[idx - W] - gray[idx + W]
+          sharp[idx] = Math.min(255, Math.max(0, lap))
+        }
+      }
+
+      // 3. Threshold adaptativo local (blocos de 32x32)
+      const BLOCK = 32, BIAS = 8
+      for (let by = 0; by < H; by += BLOCK) {
+        for (let bx = 0; bx < W; bx += BLOCK) {
+          // Média local do bloco
+          let sum = 0, count = 0
+          for (let y = by; y < Math.min(by+BLOCK, H); y++) {
+            for (let x = bx; x < Math.min(bx+BLOCK, W); x++) {
+              sum += sharp[y*W+x]; count++
+            }
+          }
+          const mean = sum / count
+          // Binariza o bloco
+          for (let y = by; y < Math.min(by+BLOCK, H); y++) {
+            for (let x = bx; x < Math.min(bx+BLOCK, W); x++) {
+              const idx = y * W + x
+              const v = sharp[idx] < mean - BIAS ? 0 : 255
+              d[idx*4] = d[idx*4+1] = d[idx*4+2] = v
+              d[idx*4+3] = 255
+            }
+          }
+        }
+      }
+
       ctx.putImageData(id, 0, 0)
       resolve(c.toDataURL('image/png'))
     }
@@ -1342,7 +1405,7 @@ function renderOCRDates(dates) {
       ${day}/${m}/${y}
     </button>`
   }).join('')
-  document.getElementById('ocr-results').classList.remove('hidden')
+  document.getElementById('ocr-results-date').classList.remove('hidden')
   document.getElementById('ocr-retry-btn').classList.remove('hidden')
 }
 
@@ -1352,39 +1415,163 @@ function applyOCRDate(dateStr) {
   showToast(`📅 Data ${fmtDate(dateStr)} preenchida!`)
 }
 
-function extractNameLines(text) {
-  // Palavras a ignorar (datas, ingredientes, instruções comuns)
-  const ignorePatterns = [
-    /^\s*$/, /^[\d\s\/.\-:]+$/, /ingrediente/i, /conservar/i, /consumir/i,
-    /validade/i, /vencimento/i, /fabricado/i, /cnpj/i, /registro/i,
-    /lote/i, /peso/i, /conteúdo/i, /unidade/i, /sac\s*:/i, /www\./i,
-    /^\d+$/, /^[^a-zA-ZÀ-ú]{0,3}$/
+// ─── Extração de campos de medicamento ───────────────────────────────────────
+const FORMAS_FARMACEUTICAS = [
+  'comprimido','comprimidos','cápsula','cápsulas','capsula','capsulas',
+  'xarope','solução','solucao','suspensão','suspensao','pomada','creme',
+  'gel','colírio','colirio','injetável','injetavel','ampola','spray',
+  'inalador','supositório','supositorio','adesivo','drágea','dragea',
+  'granulado','sachê','sache','gotas','elixir','emulsão','emulsao',
+  'pó','po oral','solução oral','comprimido revestido','cápsula dura',
+  'comprimido sublingual','pastilha','bala','film','adesivo transdérmico'
+]
+
+const DOSE_RE = /(\d+(?:[.,]\d+)?)\s*(mg|g\b|ml\b|mcg|μg|ui\b|iu\b|%|mg\/ml|mg\/g|mcg\/ml|mg\/5ml|mg\/ml|g\/100ml)/gi
+
+function extractMedFields(text) {
+  const raw   = text.split('\n').map(l => l.trim()).filter(Boolean)
+  const lower = text.toLowerCase()
+
+  // ── Dosagens ──────────────────────────────────────────────────────────────
+  const dosages = []
+  for (const m of text.matchAll(DOSE_RE)) {
+    const d = `${m[1].replace(',','.')}${m[2]}`
+    if (!dosages.includes(d)) dosages.push(d)
+  }
+
+  // ── Forma farmacêutica ────────────────────────────────────────────────────
+  let forma = ''
+  for (const f of FORMAS_FARMACEUTICAS) {
+    if (lower.includes(f)) {
+      forma = f.charAt(0).toUpperCase() + f.slice(1)
+      // Tenta capturar plural/variante do texto original
+      const re = new RegExp(f + 's?', 'i')
+      const m  = text.match(re)
+      if (m) forma = m[0].charAt(0).toUpperCase() + m[0].slice(1).toLowerCase()
+      break
+    }
+  }
+
+  // ── Candidatos ao nome ────────────────────────────────────────────────────
+  const skipPatterns = [
+    /^\d/, /cnpj/i, /registro/i, /ms\s*\d/i, /lote/i, /fab\b/i,
+    /val\b/i, /venc/i, /fabricado/i, /conservar/i, /ingrediente/i,
+    /www\./i, /sac\s*:/i, /tel/i, /^\s*$/, /^[^a-zA-ZÀ-ú]+$/,
+    /embalagem/i, /conteúdo/i, /peso/i, /volume/i
   ]
-  return text
-    .split('\n')
-    .map(l => l.trim())
+
+  // Pontuação: mais maiúsculas = provável nome de remédio
+  const scored = raw
     .filter(l => l.length >= 3 && l.length <= 80)
-    .filter(l => !ignorePatterns.some(p => p.test(l)))
-    .slice(0, 12) // máximo 12 opções
+    .filter(l => !skipPatterns.some(p => p.test(l)))
+    .map(l => {
+      const upCount  = (l.match(/[A-ZÁÉÍÓÚÂÊÎÔÛÃÕÀÇ]/g) || []).length
+      const allUpper = upCount / l.replace(/\s/g,'').length
+      const hasDose  = DOSE_RE.test(l); DOSE_RE.lastIndex = 0
+      const bonus    = hasDose ? 0.1 : 0 // linhas com dose podem ter o nome junto
+      return { text: l, score: allUpper + bonus }
+    })
+    .sort((a,b) => b.score - a.score)
+    .slice(0, 8)
+    .map(x => x.text)
+
+  return { names: scored, dosages, forma }
 }
 
-function renderOCRNames(lines) {
-  const list = document.getElementById('ocr-dates-list')
-  list.innerHTML = lines.map(line => {
-    const safe = line.replace(/"/g,'&quot;').replace(/</g,'&lt;')
-    return `<button onclick="applyOCRName(this.dataset.val)" data-val="${safe}"
-      class="w-full text-left px-3 py-2 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 border border-slate-200 hover:border-blue-300 text-sm rounded-lg transition-colors truncate">
-      ${safe}
-    </button>`
-  }).join('')
-  document.getElementById('ocr-results').classList.remove('hidden')
+// ── Estado da seleção de medicamento ──────────────────────────────────────────
+let medSelected = { name:'', dosages:[], forma:'' }
+
+function renderMedFields(fields) {
+  medSelected = { name:'', dosages: fields.dosages, forma: fields.forma }
+
+  // Nomes
+  const nameWrap = document.getElementById('ocr-med-name-wrap')
+  const nameList = document.getElementById('ocr-med-name-list')
+  if (fields.names.length > 0) {
+    nameList.innerHTML = fields.names.map(n => {
+      const safe = n.replace(/"/g,'&quot;').replace(/</g,'&lt;')
+      return `<button onclick="selectMedName(this, '${safe}')"
+        class="med-name-btn w-full text-left px-3 py-2 bg-slate-100 hover:bg-blue-600 hover:text-white border border-slate-200 text-sm font-medium rounded-lg transition-colors">
+        ${safe}
+      </button>`
+    }).join('')
+    nameWrap.classList.remove('hidden')
+  }
+
+  // Dosagens
+  const doseWrap = document.getElementById('ocr-med-dose-wrap')
+  const doseList = document.getElementById('ocr-med-dose-list')
+  if (fields.dosages.length > 0) {
+    doseList.innerHTML = fields.dosages.map(d =>
+      `<span class="px-3 py-1 bg-purple-100 text-purple-700 border border-purple-200 text-sm font-bold rounded-full">${d}</span>`
+    ).join('')
+    doseWrap.classList.remove('hidden')
+  }
+
+  // Forma farmacêutica
+  const formWrap = document.getElementById('ocr-med-form-wrap')
+  if (fields.forma) {
+    document.getElementById('ocr-med-form-val').textContent = fields.forma
+    formWrap.classList.remove('hidden')
+  }
+
+  document.getElementById('ocr-results-med').classList.remove('hidden')
   document.getElementById('ocr-retry-btn').classList.remove('hidden')
+  updateMedPreview()
 }
 
-function applyOCRName(name) {
-  document.getElementById('form-name').value = name
+function selectMedName(btn, name) {
+  document.querySelectorAll('.med-name-btn').forEach(b =>
+    b.classList.remove('bg-blue-600','text-white','border-blue-600'))
+  btn.classList.add('bg-blue-600','text-white','border-blue-600')
+  medSelected.name = name
+  updateMedPreview()
+}
+
+function updateMedPreview() {
+  const parts = [
+    medSelected.name,
+    medSelected.dosages.join(' '),
+    medSelected.forma
+  ].filter(Boolean)
+
+  const preview = parts.join(' ').trim()
+  const wrap = document.getElementById('ocr-med-preview-wrap')
+  if (preview) {
+    document.getElementById('ocr-med-preview-text').textContent = preview
+    wrap.classList.remove('hidden')
+  } else {
+    wrap.classList.add('hidden')
+  }
+}
+
+function applyMedName() {
+  const parts = [
+    medSelected.name,
+    medSelected.dosages.join(' '),
+    medSelected.forma
+  ].filter(Boolean)
+  const final = parts.join(' ').trim()
+  if (!final) return
+  document.getElementById('form-name').value = final
   closeOCRModal()
-  showToast('✓ Nome preenchido!')
+  showToast('✓ Nome do medicamento preenchido!')
+}
+
+// Limpa resultados med ao retentar
+function ocrRetry() {
+  ;['ocr-results-date','ocr-results-med'].forEach(id =>
+    document.getElementById(id).classList.add('hidden'))
+  ;['ocr-med-name-wrap','ocr-med-dose-wrap','ocr-med-form-wrap','ocr-med-preview-wrap'].forEach(id =>
+    document.getElementById(id).classList.add('hidden'))
+  document.getElementById('ocr-preview-wrap').classList.add('hidden')
+  document.getElementById('ocr-camera-wrap').classList.remove('hidden')
+  document.getElementById('ocr-retry-btn').classList.add('hidden')
+  document.getElementById('ocr-actions').classList.remove('hidden')
+  document.getElementById('ocr-progress-wrap').classList.add('hidden')
+  document.getElementById('ocr-status').textContent =
+    ocrMode === 'date' ? 'Aponte para a data de validade' : 'Aponte para o rótulo do medicamento'
+  medSelected = { name:'', dosages:[], forma:'' }
 }
 
 // ─── Escape para fechar modais ────────────────────────────────────────────────
