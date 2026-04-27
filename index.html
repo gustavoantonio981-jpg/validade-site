@@ -350,8 +350,14 @@
 
       <div>
         <label class="block text-xs font-medium text-slate-600 mb-1">Nome do Produto <span class="text-red-400">*</span></label>
-        <input id="form-name" type="text" placeholder="Ex: Leite Integral 1L"
-          class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-400" />
+        <div class="flex gap-2">
+          <input id="form-name" type="text" placeholder="Ex: Leite Integral 1L"
+            class="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-400" />
+          <button type="button" onclick="openOCRModal('name')"
+            class="px-2.5 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm transition-colors" title="Ler nome por foto">
+            📸
+          </button>
+        </div>
         <p id="lookup-status" class="text-xs mt-1"></p>
       </div>
 
@@ -470,8 +476,8 @@
 ═══════════════════════════════════ -->
 <div id="modal-ocr" class="modal-backdrop hidden" onclick="handleModalBackdrop(event,'modal-ocr')">
   <div class="modal-box p-5 fade-in">
-    <h2 class="text-base font-bold text-slate-900 mb-1">📸 Ler Data de Validade</h2>
-    <p class="text-xs text-slate-400 mb-4">Aponte para a data impressa na embalagem e capture</p>
+    <h2 id="ocr-title" class="text-base font-bold text-slate-900 mb-1">📸 Ler por Foto</h2>
+    <p id="ocr-subtitle" class="text-xs text-slate-400 mb-4"></p>
 
     <!-- Câmera / Preview -->
     <div id="ocr-camera-wrap" class="relative rounded-xl overflow-hidden bg-gray-900 mb-3" style="aspect-ratio:4/3">
@@ -1104,10 +1110,17 @@ function showToast(msg) {
   toastTimer = setTimeout(() => { el.style.display = 'none' }, 2500)
 }
 
-// ─── OCR — Leitura de data por foto ──────────────────────────────────────────
+// ─── OCR — Leitura de data/nome por foto ─────────────────────────────────────
 let ocrStream = null
+let ocrMode   = 'date' // 'date' | 'name'
 
-async function openOCRModal() {
+async function openOCRModal(mode = 'date') {
+  ocrMode = mode
+  document.getElementById('ocr-title').textContent    = mode === 'date' ? '📸 Ler Data de Validade' : '📸 Ler Nome do Produto'
+  document.getElementById('ocr-subtitle').textContent = mode === 'date'
+    ? 'Aponte para a data impressa na embalagem e capture'
+    : 'Aponte para o nome do produto na embalagem e capture'
+
   openModal('modal-ocr')
   document.getElementById('ocr-results').classList.add('hidden')
   document.getElementById('ocr-preview-wrap').classList.add('hidden')
@@ -1115,7 +1128,9 @@ async function openOCRModal() {
   document.getElementById('ocr-retry-btn').classList.add('hidden')
   document.getElementById('ocr-actions').classList.remove('hidden')
   document.getElementById('ocr-progress-wrap').classList.add('hidden')
-  document.getElementById('ocr-status').textContent = 'Aponte para a data de validade'
+  document.getElementById('ocr-status').textContent = mode === 'date'
+    ? 'Aponte para a data de validade'
+    : 'Aponte para o nome/rótulo do produto'
 
   try {
     ocrStream = await navigator.mediaDevices.getUserMedia({
@@ -1195,16 +1210,26 @@ async function processOCRImage(dataUrl) {
 
     const text = result.data.text
     console.log('OCR texto:', text)
-
-    const dates = extractDates(text)
     setProgress(100)
 
-    if (dates.length === 0) {
-      setStatus('⚠ Nenhuma data encontrada. Tente uma foto mais nítida.')
-      document.getElementById('ocr-retry-btn').classList.remove('hidden')
+    if (ocrMode === 'date') {
+      const dates = extractDates(text)
+      if (dates.length === 0) {
+        setStatus('⚠ Nenhuma data encontrada. Tente uma foto mais nítida.')
+        document.getElementById('ocr-retry-btn').classList.remove('hidden')
+      } else {
+        setStatus(`✓ ${dates.length} data${dates.length > 1 ? 's' : ''} encontrada${dates.length > 1 ? 's' : ''}:`)
+        renderOCRDates(dates)
+      }
     } else {
-      setStatus(`✓ ${dates.length} data${dates.length > 1 ? 's' : ''} encontrada${dates.length > 1 ? 's' : ''}:`)
-      renderOCRDates(dates)
+      const lines = extractNameLines(text)
+      if (lines.length === 0) {
+        setStatus('⚠ Nenhum texto encontrado. Tente uma foto mais nítida.')
+        document.getElementById('ocr-retry-btn').classList.remove('hidden')
+      } else {
+        setStatus('✓ Toque na linha com o nome do produto:')
+        renderOCRNames(lines)
+      }
     }
   } catch (err) {
     setStatus('❌ Erro no OCR: ' + (err.message || 'tente novamente'))
@@ -1325,6 +1350,41 @@ function applyOCRDate(dateStr) {
   document.getElementById('form-expiry').value = dateStr
   closeOCRModal()
   showToast(`📅 Data ${fmtDate(dateStr)} preenchida!`)
+}
+
+function extractNameLines(text) {
+  // Palavras a ignorar (datas, ingredientes, instruções comuns)
+  const ignorePatterns = [
+    /^\s*$/, /^[\d\s\/.\-:]+$/, /ingrediente/i, /conservar/i, /consumir/i,
+    /validade/i, /vencimento/i, /fabricado/i, /cnpj/i, /registro/i,
+    /lote/i, /peso/i, /conteúdo/i, /unidade/i, /sac\s*:/i, /www\./i,
+    /^\d+$/, /^[^a-zA-ZÀ-ú]{0,3}$/
+  ]
+  return text
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length >= 3 && l.length <= 80)
+    .filter(l => !ignorePatterns.some(p => p.test(l)))
+    .slice(0, 12) // máximo 12 opções
+}
+
+function renderOCRNames(lines) {
+  const list = document.getElementById('ocr-dates-list')
+  list.innerHTML = lines.map(line => {
+    const safe = line.replace(/"/g,'&quot;').replace(/</g,'&lt;')
+    return `<button onclick="applyOCRName(this.dataset.val)" data-val="${safe}"
+      class="w-full text-left px-3 py-2 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 border border-slate-200 hover:border-blue-300 text-sm rounded-lg transition-colors truncate">
+      ${safe}
+    </button>`
+  }).join('')
+  document.getElementById('ocr-results').classList.remove('hidden')
+  document.getElementById('ocr-retry-btn').classList.remove('hidden')
+}
+
+function applyOCRName(name) {
+  document.getElementById('form-name').value = name
+  closeOCRModal()
+  showToast('✓ Nome preenchido!')
 }
 
 // ─── Escape para fechar modais ────────────────────────────────────────────────
