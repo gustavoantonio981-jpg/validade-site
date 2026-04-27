@@ -6,6 +6,7 @@
 <title>Validades — Gestão de Produtos</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
+<script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
   tailwind.config = {
     darkMode: 'class',
@@ -357,8 +358,14 @@
       <div class="grid grid-cols-2 gap-3">
         <div>
           <label class="block text-xs font-medium text-slate-600 mb-1">Data de Validade <span class="text-red-400">*</span></label>
-          <input id="form-expiry" type="date"
-            class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-400" />
+          <div class="flex gap-2">
+            <input id="form-expiry" type="date"
+              class="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-400" />
+            <button type="button" onclick="openOCRModal()"
+              class="px-2.5 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm transition-colors" title="Ler data por foto">
+              📸
+            </button>
+          </div>
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-600 mb-1">Quantidade</label>
@@ -453,6 +460,73 @@
 
     <button onclick="closeScannerModal()"
       class="w-full mt-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
+      Cancelar
+    </button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════
+     MODAL: OCR — LER DATA POR FOTO
+═══════════════════════════════════ -->
+<div id="modal-ocr" class="modal-backdrop hidden" onclick="handleModalBackdrop(event,'modal-ocr')">
+  <div class="modal-box p-5 fade-in">
+    <h2 class="text-base font-bold text-slate-900 mb-1">📸 Ler Data de Validade</h2>
+    <p class="text-xs text-slate-400 mb-4">Aponte para a data impressa na embalagem e capture</p>
+
+    <!-- Câmera / Preview -->
+    <div id="ocr-camera-wrap" class="relative rounded-xl overflow-hidden bg-gray-900 mb-3" style="aspect-ratio:4/3">
+      <video id="ocr-video" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;display:block;"></video>
+      <!-- Grade de foco -->
+      <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div style="width:80%;height:40%;border:2px solid rgba(96,165,250,0.8);border-radius:8px;box-shadow:0 0 0 2000px rgba(0,0,0,0.35);">
+          <div class="scan-line" style="background:#60a5fa;box-shadow:0 0 8px #60a5fa;position:absolute;left:4px;right:4px;height:2px;"></div>
+        </div>
+      </div>
+      <!-- Canvas oculto para captura -->
+      <canvas id="ocr-canvas" style="display:none;"></canvas>
+    </div>
+
+    <!-- Preview da foto capturada -->
+    <div id="ocr-preview-wrap" class="hidden mb-3 rounded-xl overflow-hidden bg-gray-100 text-center">
+      <img id="ocr-preview-img" class="w-full rounded-xl" style="max-height:200px;object-fit:contain;" />
+    </div>
+
+    <!-- Status / progresso -->
+    <div id="ocr-status" class="text-xs text-center text-slate-400 mb-3"></div>
+
+    <!-- Barra de progresso -->
+    <div id="ocr-progress-wrap" class="hidden mb-3">
+      <div class="w-full bg-slate-100 rounded-full h-1.5">
+        <div id="ocr-progress-bar" class="bg-blue-500 h-1.5 rounded-full transition-all" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Datas encontradas -->
+    <div id="ocr-results" class="hidden mb-3">
+      <p class="text-xs font-medium text-slate-600 mb-2">Datas encontradas — toque para usar:</p>
+      <div id="ocr-dates-list" class="flex flex-wrap gap-2"></div>
+    </div>
+
+    <!-- Botões de ação -->
+    <div id="ocr-actions" class="flex gap-2 mb-3">
+      <button id="ocr-capture-btn" onclick="ocrCapture()"
+        class="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors">
+        📸 Capturar
+      </button>
+      <label class="flex-1">
+        <span class="flex items-center justify-center w-full py-2.5 border border-slate-200 text-slate-600 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors cursor-pointer">
+          🖼 Galeria
+        </span>
+        <input id="ocr-file-input" type="file" accept="image/*" class="hidden" onchange="ocrFromFile(event)" />
+      </label>
+    </div>
+
+    <button id="ocr-retry-btn" onclick="ocrRetry()" class="hidden w-full py-2 mb-2 border border-blue-300 text-blue-600 text-sm font-medium rounded-lg hover:bg-blue-50 transition-colors">
+      🔄 Tentar novamente
+    </button>
+
+    <button onclick="closeOCRModal()"
+      class="w-full py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
       Cancelar
     </button>
   </div>
@@ -1030,10 +1104,233 @@ function showToast(msg) {
   toastTimer = setTimeout(() => { el.style.display = 'none' }, 2500)
 }
 
+// ─── OCR — Leitura de data por foto ──────────────────────────────────────────
+let ocrStream = null
+
+async function openOCRModal() {
+  openModal('modal-ocr')
+  document.getElementById('ocr-results').classList.add('hidden')
+  document.getElementById('ocr-preview-wrap').classList.add('hidden')
+  document.getElementById('ocr-camera-wrap').classList.remove('hidden')
+  document.getElementById('ocr-retry-btn').classList.add('hidden')
+  document.getElementById('ocr-actions').classList.remove('hidden')
+  document.getElementById('ocr-progress-wrap').classList.add('hidden')
+  document.getElementById('ocr-status').textContent = 'Aponte para a data de validade'
+
+  try {
+    ocrStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+    })
+    document.getElementById('ocr-video').srcObject = ocrStream
+  } catch {
+    document.getElementById('ocr-status').textContent = '📷 Câmera indisponível — use a galeria'
+    document.getElementById('ocr-camera-wrap').style.display = 'none'
+  }
+}
+
+function closeOCRModal() {
+  stopOCR()
+  closeModal('modal-ocr')
+  document.getElementById('ocr-camera-wrap').style.display = ''
+}
+
+function stopOCR() {
+  if (ocrStream) { ocrStream.getTracks().forEach(t => t.stop()); ocrStream = null }
+}
+
+function ocrCapture() {
+  const video  = document.getElementById('ocr-video')
+  const canvas = document.getElementById('ocr-canvas')
+  canvas.width  = video.videoWidth  || 1280
+  canvas.height = video.videoHeight || 720
+  canvas.getContext('2d').drawImage(video, 0, 0)
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.95)
+  processOCRImage(dataUrl)
+}
+
+function ocrFromFile(e) {
+  const file = e.target.files[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = ev => processOCRImage(ev.target.result)
+  reader.readAsDataURL(file)
+}
+
+function ocrRetry() {
+  document.getElementById('ocr-results').classList.add('hidden')
+  document.getElementById('ocr-preview-wrap').classList.add('hidden')
+  document.getElementById('ocr-camera-wrap').classList.remove('hidden')
+  document.getElementById('ocr-retry-btn').classList.add('hidden')
+  document.getElementById('ocr-actions').classList.remove('hidden')
+  document.getElementById('ocr-progress-wrap').classList.add('hidden')
+  document.getElementById('ocr-status').textContent = 'Aponte para a data de validade'
+}
+
+async function processOCRImage(dataUrl) {
+  // Mostra preview
+  document.getElementById('ocr-preview-img').src = dataUrl
+  document.getElementById('ocr-preview-wrap').classList.remove('hidden')
+  document.getElementById('ocr-camera-wrap').classList.add('hidden')
+  document.getElementById('ocr-actions').classList.add('hidden')
+  document.getElementById('ocr-progress-wrap').classList.remove('hidden')
+  document.getElementById('ocr-results').classList.add('hidden')
+
+  const setStatus = t => { document.getElementById('ocr-status').textContent = t }
+  const setProgress = p => { document.getElementById('ocr-progress-bar').style.width = p + '%' }
+
+  setStatus('🔍 Processando imagem com OCR…')
+  setProgress(10)
+
+  try {
+    // Pré-processa imagem para melhorar OCR
+    const enhanced = await enhanceImageForOCR(dataUrl)
+    setProgress(30)
+
+    const result = await Tesseract.recognize(enhanced, 'por+eng', {
+      logger: m => {
+        if (m.status === 'recognizing text') setProgress(30 + Math.round(m.progress * 60))
+      }
+    })
+    setProgress(95)
+
+    const text = result.data.text
+    console.log('OCR texto:', text)
+
+    const dates = extractDates(text)
+    setProgress(100)
+
+    if (dates.length === 0) {
+      setStatus('⚠ Nenhuma data encontrada. Tente uma foto mais nítida.')
+      document.getElementById('ocr-retry-btn').classList.remove('hidden')
+    } else {
+      setStatus(`✓ ${dates.length} data${dates.length > 1 ? 's' : ''} encontrada${dates.length > 1 ? 's' : ''}:`)
+      renderOCRDates(dates)
+    }
+  } catch (err) {
+    setStatus('❌ Erro no OCR: ' + (err.message || 'tente novamente'))
+    document.getElementById('ocr-retry-btn').classList.remove('hidden')
+  }
+
+  document.getElementById('ocr-progress-wrap').classList.add('hidden')
+}
+
+async function enhanceImageForOCR(dataUrl) {
+  return new Promise(resolve => {
+    const img = new Image()
+    img.onload = () => {
+      const c   = document.createElement('canvas')
+      const MAX = 2000
+      const scale = Math.min(MAX / img.width, MAX / img.height, 1)
+      c.width  = img.width  * scale
+      c.height = img.height * scale
+      const ctx = c.getContext('2d')
+      ctx.drawImage(img, 0, 0, c.width, c.height)
+
+      // Grayscale + contraste aumentado
+      const id = ctx.getImageData(0, 0, c.width, c.height)
+      const d  = id.data
+      for (let i = 0; i < d.length; i += 4) {
+        const gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2]
+        // Contraste
+        const c2 = Math.min(255, Math.max(0, (gray - 128) * 1.5 + 128))
+        d[i] = d[i+1] = d[i+2] = c2
+      }
+      ctx.putImageData(id, 0, 0)
+      resolve(c.toDataURL('image/png'))
+    }
+    img.src = dataUrl
+  })
+}
+
+function extractDates(text) {
+  const found = new Set()
+  const today = new Date()
+  const maxYear = today.getFullYear() + 10
+
+  // Padrões de data em embalagens brasileiras
+  const patterns = [
+    // VAL/VENC/EXP: DD/MM/YYYY ou DD.MM.YYYY
+    /(?:val(?:idade)?|venc(?:imento)?|exp(?:iry|ires)?|fab|best\s*before)[:\s.]*(\d{2})[\/.\-](\d{2})[\/.\-](\d{2,4})/gi,
+    // MM/YYYY ou MM.YYYY (formato curto muito comum)
+    /\b(\d{2})[\/.](\d{4})\b/g,
+    // DD/MM/YYYY ou DD.MM.YYYY
+    /\b(\d{2})[\/.\-](\d{2})[\/.\-](\d{4})\b/g,
+    // YYYY-MM-DD (ISO)
+    /\b(\d{4})[.\-\/](\d{2})[.\-\/](\d{2})\b/g,
+    // MM/YY (cartão/embalagem simples)
+    /\b(\d{2})[\/](\d{2})\b/g,
+  ]
+
+  // Padrão 1: com prefixo
+  for (const m of text.matchAll(patterns[0])) {
+    const d = parseFlexDate(m[1], m[2], m[3])
+    if (d) found.add(d)
+  }
+  // Padrão 2: MM/YYYY
+  for (const m of text.matchAll(patterns[1])) {
+    const month = parseInt(m[1]), year = parseInt(m[2])
+    if (month >= 1 && month <= 12 && year >= today.getFullYear() && year <= maxYear) {
+      const last = new Date(year, month, 0).getDate()
+      found.add(`${year}-${String(month).padStart(2,'0')}-${String(last).padStart(2,'0')}`)
+    }
+  }
+  // Padrão 3: DD/MM/YYYY
+  for (const m of text.matchAll(patterns[2])) {
+    const d = parseFlexDate(m[1], m[2], m[3])
+    if (d) found.add(d)
+  }
+  // Padrão 4: ISO YYYY-MM-DD
+  for (const m of text.matchAll(patterns[3])) {
+    const [y, mo, d] = [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])]
+    if (y >= today.getFullYear() && y <= maxYear && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)
+      found.add(`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`)
+  }
+
+  // Ordena do mais próximo ao mais distante
+  return [...found].sort()
+}
+
+function parseFlexDate(a, b, c) {
+  // a,b,c podem ser DD,MM,YYYY ou MM,DD,YYYY dependendo do contexto
+  const today = new Date()
+  let day, month, year
+
+  if (c.length === 4) {
+    year = parseInt(c); day = parseInt(a); month = parseInt(b)
+  } else if (c.length === 2) {
+    year = 2000 + parseInt(c); day = parseInt(a); month = parseInt(b)
+  } else return null
+
+  if (month > 12) { [day, month] = [month, day] } // swap se mês > 12
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null
+  if (year < today.getFullYear() || year > today.getFullYear() + 10) return null
+
+  return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+}
+
+function renderOCRDates(dates) {
+  const list = document.getElementById('ocr-dates-list')
+  list.innerHTML = dates.map(d => {
+    const [y,m,day] = d.split('-')
+    return `<button onclick="applyOCRDate('${d}')"
+      class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg transition-colors">
+      ${day}/${m}/${y}
+    </button>`
+  }).join('')
+  document.getElementById('ocr-results').classList.remove('hidden')
+  document.getElementById('ocr-retry-btn').classList.remove('hidden')
+}
+
+function applyOCRDate(dateStr) {
+  document.getElementById('form-expiry').value = dateStr
+  closeOCRModal()
+  showToast(`📅 Data ${fmtDate(dateStr)} preenchida!`)
+}
+
 // ─── Escape para fechar modais ────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return
-  ;['modal-form','modal-scanner','modal-delete'].forEach(id => {
+  ;['modal-form','modal-scanner','modal-delete','modal-ocr'].forEach(id => {
     if (!document.getElementById(id).classList.contains('hidden')) {
       if (id === 'modal-scanner') closeScannerModal()
       else closeModal(id)
