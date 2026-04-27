@@ -1345,11 +1345,13 @@ function extractDates(text) {
     /\b(\d{2})[\/.\-](\d{2})[\/.\-](\d{4})\b/g,
     // YYYY-MM-DD (ISO)
     /\b(\d{4})[.\-\/](\d{2})[.\-\/](\d{2})\b/g,
-    // MM/YY (cartão/embalagem simples)
-    /\b(\d{2})[\/](\d{2})\b/g,
+    // "V DD MM AA" — formato espaçado comum em medicamentos (ex: V 12 04 27)
+    /\bV\s+(\d{2})\s+(\d{2})\s+(\d{2})\b/gi,
+    // "V DD MM YYYY" — variante com ano completo (ex: V 12 04 2027)
+    /\bV\s+(\d{2})\s+(\d{2})\s+(\d{4})\b/gi,
   ]
 
-  // Padrão 1: com prefixo
+  // Padrão 1: com prefixo textual
   for (const m of text.matchAll(patterns[0])) {
     const d = parseFlexDate(m[1], m[2], m[3])
     if (d) found.add(d)
@@ -1372,6 +1374,13 @@ function extractDates(text) {
     const [y, mo, d] = [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])]
     if (y >= today.getFullYear() && y <= maxYear && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)
       found.add(`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`)
+  }
+  // Padrão 5 e 6: "V DD MM AA" e "V DD MM YYYY"
+  for (const pat of [patterns[4], patterns[5]]) {
+    for (const m of text.matchAll(pat)) {
+      const d = parseFlexDate(m[1], m[2], m[3])
+      if (d) found.add(d)
+    }
   }
 
   // Ordena do mais próximo ao mais distante
